@@ -30,3 +30,6 @@ class McpServer : public QObject {
 };
 int runHeadless(int argc, char **argv);
 int runMcpBridge(int argc, char **argv);
+
+// Asynchronous stdio transport shared by GUI bridges and headless sessions.
+void startMcpStdio(const QString &endpoint);

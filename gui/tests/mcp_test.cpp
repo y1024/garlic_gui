@@ -40,6 +40,38 @@ class McpTest : public QObject {
         return result;
     }
   private slots:
+    void idleBridgeDisconnect() {
+        Backend backend;
+        McpServer server(&backend);
+        QString error;
+        QVERIFY(server.start(&error, true));
+        for (int i = 0; i < 4; ++i) {
+            QProcess bridge;
+            bridge.start(qEnvironmentVariable("GARLIC_TEST_GUI"), {"--mcp", "--socket", server.endpoint()});
+            QVERIFY(bridge.waitForStarted(3000));
+            bridge.write("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n");
+            QTRY_VERIFY_WITH_TIMEOUT(bridge.bytesAvailable() > 0, 5000);
+            QVERIFY(bridge.readAllStandardOutput().contains("tools"));
+            // Keep stdin open, including an unfinished line: disconnect must
+            // still terminate the bridge without waiting for another request.
+            bridge.write("{\"jsonrpc\":");
+            server.stop();
+            QTRY_COMPARE_WITH_TIMEOUT(bridge.state(), QProcess::NotRunning, 3000);
+            QVERIFY(bridge.exitCode() != 0);
+            QVERIFY(server.start(&error, true));
+        }
+    }
+    void defaultHttpAddress() {
+        auto settings = AppSettings::fromJson({});
+        QCOMPARE(settings.mcpHost, QString("127.0.0.1"));
+        settings.mcpTransport = "http"; settings.mcpPort = 0;
+        Backend backend; backend.configure(settings);
+        McpServer server(&backend);
+        QString error;
+        QVERIFY2(server.start(&error), qPrintable(error));
+        QVERIFY(server.httpUrl().startsWith("http://127.0.0.1:"));
+        QCOMPARE(AppSettings::fromJson({{"mcpHost", "0.0.0.0"}}).mcpHost, QString("0.0.0.0"));
+    }
     void privateSessionEndpoints() {
         Backend backend;
         McpServer first(&backend), second(&backend);

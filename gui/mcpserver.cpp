@@ -15,6 +15,15 @@
 #include <QUuid>
 #include <QtConcurrent>
 #include <iostream>
+#include <cstdio>
+#include <cerrno>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#else
+#include <poll.h>
+#include <unistd.h>
+#include <signal.h>
+#endif
 
 namespace {
 QJsonObject schema(const QStringList &required, const QJsonObject &properties) {
@@ -881,31 +890,107 @@ int runMcpBridge(int argc, char **argv) {
             return 1;
         }
     }
-    std::string line;
-    QByteArray buffer;
-    while (std::getline(std::cin, line)) {
-        if (line.size() > 4 * 1024 * 1024) {
-            std::cerr << "MCP request too large\n";
-            return 2;
-        }
-        const auto doc = QJsonDocument::fromJson(QByteArray::fromStdString(line));
-        socket.write(QByteArray::fromStdString(line) + "\n");
-        socket.waitForBytesWritten(3000);
-        if (!doc.object().contains("id"))
-            continue;
-        int elapsed = 0;
-        while (!buffer.contains('\n')) {
-            if (!socket.waitForReadyRead(1000)) {
-                if (socket.state() != QLocalSocket::ConnectedState || ++elapsed > 310) {
-                    std::cerr << "GUI MCP disconnected or timed out\n";
-                    return 1;
-                }
-            }
-            buffer += socket.readAll();
-        }
-        int newline = buffer.indexOf('\n');
-        std::cout << buffer.left(newline).constData() << std::endl;
-        buffer.remove(0, newline + 1);
-    }
-    return 0;
+    socket.abort();
+    startMcpStdio(endpoint);
+    return app.exec();
 }
+
+namespace {
+// Never block on getline: even an idle stdin must allow socket disconnects and
+// headless cancellation to be processed. Read bounded chunks from client pipes.
+class StdioTransport : public QObject {
+    QLocalSocket socket_;
+    QTimer inputTimer_, deadline_;
+    QByteArray input_, output_;
+    bool eof_ = false, pending_ = false;
+    static constexpr qsizetype maxRequest = 4 * 1024 * 1024;
+    void fail(const char *message) {
+        std::fprintf(stderr, "%s\n", message);
+        inputTimer_.stop();
+        QCoreApplication::exit(1);
+    }
+    void pump() {
+        if (pending_) return;
+        while (!input_.isEmpty()) {
+            auto end = input_.indexOf('\n');
+            if (end < 0) {
+                if (!eof_) return;
+                end = input_.size();
+            }
+            const auto line = input_.left(end);
+            input_.remove(0, end + 1);
+            const auto doc = QJsonDocument::fromJson(line);
+            // Invalid input receives a parse-error response from the server too.
+            pending_ = !doc.isObject() || doc.object().contains("id");
+            socket_.write(line + '\n');
+            if (pending_) { deadline_.start(310000); return; }
+        }
+        if (eof_ && socket_.bytesToWrite() == 0) QCoreApplication::quit();
+    }
+    void readInput() {
+        char bytes[65536];
+        qint64 count = 0;
+#ifdef Q_OS_WIN
+        const auto handle = GetStdHandle(STD_INPUT_HANDLE);
+        const auto type = GetFileType(handle);
+        DWORD available = 0, received = 0;
+        if (type == FILE_TYPE_PIPE) {
+            if (!PeekNamedPipe(handle, nullptr, 0, nullptr, &available, nullptr)) {
+                if (GetLastError() != ERROR_BROKEN_PIPE) { fail("Cannot read MCP stdin"); return; }
+                eof_ = true;
+            } else if (!available) return;
+        } else if (type != FILE_TYPE_DISK) {
+            fail("MCP stdio requires a pipe or redirected file"); return;
+        }
+        if (!eof_) {
+            if (!ReadFile(handle, bytes, type == FILE_TYPE_PIPE ? qMin<DWORD>(available, sizeof(bytes)) : sizeof(bytes), &received, nullptr)) {
+                if (GetLastError() != ERROR_BROKEN_PIPE) { fail("Cannot read MCP stdin"); return; }
+            }
+            count = received;
+        }
+#else
+        pollfd fd{STDIN_FILENO, POLLIN, 0};
+        const auto ready = ::poll(&fd, 1, 0);
+        if (ready < 0) { if (errno != EINTR) fail("Cannot poll MCP stdin"); return; }
+        if (!ready) return;
+        count = ::read(STDIN_FILENO, bytes, sizeof(bytes));
+        if (count < 0) { if (errno != EINTR && errno != EAGAIN) fail("Cannot read MCP stdin"); return; }
+#endif
+        if (!count) { eof_ = true; inputTimer_.stop(); }
+        else input_.append(bytes, count);
+        if (input_.size() > maxRequest) { fail("MCP input queue too large"); return; }
+        pump();
+    }
+  public:
+    explicit StdioTransport(const QString &endpoint) : QObject(QCoreApplication::instance()) {
+#ifndef Q_OS_WIN
+        // Report a closed client output through fwrite instead of dying before
+        // the headless backend has had a chance to reap its engine processes.
+        ::signal(SIGPIPE, SIG_IGN);
+#endif
+        inputTimer_.setInterval(10);
+        deadline_.setSingleShot(true);
+        connect(&inputTimer_, &QTimer::timeout, this, [this] { readInput(); });
+        connect(&deadline_, &QTimer::timeout, this, [this] { fail("MCP response timed out"); });
+        connect(&socket_, &QLocalSocket::connected, this, [this] { inputTimer_.start(); });
+        connect(&socket_, &QLocalSocket::disconnected, this, [this] { fail("MCP server disconnected"); });
+        connect(&socket_, &QLocalSocket::errorOccurred, this, [this] { fail("MCP socket error"); });
+        connect(&socket_, &QLocalSocket::bytesWritten, this, [this] { pump(); });
+        connect(&socket_, &QLocalSocket::readyRead, this, [this] {
+            output_ += socket_.readAll();
+            auto end = output_.indexOf('\n');
+            if (end < 0) return;
+            if (std::fwrite(output_.constData(), 1, size_t(end + 1), stdout) != size_t(end + 1) || std::fflush(stdout) != 0) {
+                fail("MCP client output closed"); return;
+            }
+            output_.remove(0, end + 1);
+            pending_ = false;
+            deadline_.stop();
+            pump();
+        });
+        // Defer connection errors until the caller's event loop is running.
+        QTimer::singleShot(0, this, [this, endpoint] { socket_.connectToServer(endpoint); });
+    }
+};
+}
+void startMcpStdio(const QString &endpoint) { new StdioTransport(endpoint); }

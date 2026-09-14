@@ -57,6 +57,25 @@ class WindowTest : public QObject {
         QCOMPARE(saved.numberFormat, QString("hex"));
         QCOMPARE(AppSettings::fromJson({{"numberFormat", "invalid"}}).numberFormat, QString("auto"));
     }
+    void searchThemeSwitch() {
+        MainWindow window;
+        SearchDialog dialog(&window);
+        auto table = dialog.findChild<QTableView *>("searchResults");
+        QVERIFY(table && table->alternatingRowColors());
+        dialog.show();
+        auto settings = window.backend()->settings();
+        for (const auto &theme : {"light", "dark", "light", "dark"}) {
+            settings.theme = theme;
+            window.applySettings(settings);
+            QCoreApplication::processEvents();
+            const auto palette = table->palette();
+            const bool dark = settings.theme == "dark";
+            for (auto group : {QPalette::Active, QPalette::Inactive, QPalette::Disabled}) {
+                QCOMPARE(palette.color(group, QPalette::AlternateBase), QColor(dark ? "#1c2937" : "#f0f4f8"));
+                QVERIFY((palette.color(group, QPalette::Base).lightness() < 128) == dark);
+            }
+        }
+    }
     void searchHistoryLimit() {
         MainWindow window;
         SearchDialog dialog(&window);

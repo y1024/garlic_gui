@@ -4,9 +4,14 @@
 #include <QCommandLineParser>
 #include <QFileInfo>
 #include <QJsonDocument>
-#include <QProcess>
 #include <QTimer>
 #include <cstdio>
+#include <csignal>
+
+namespace {
+volatile std::sig_atomic_t stopRequested = 0;
+void requestStop(int) { stopRequested = 1; }
+}
 
 int runHeadless(int argc, char **argv) {
     QCoreApplication app(argc, argv);
@@ -28,7 +33,8 @@ int runHeadless(int argc, char **argv) {
                        {"simplify-control-flow", "Simplify control flow"},
                        {"unflatten", "Recover flattened control flow"},
                        {"background", "Generate all sources in the background"},
-                       {"http-port", "Serve HTTP MCP on loopback instead of stdio (0 selects a free port)", "port"},
+                       {"http-port", "Serve HTTP MCP instead of stdio (0 selects a free port)", "port"},
+                       {"http-host", "HTTP bind IP", "address", "127.0.0.1"},
                        {"print-mcp-config", "Print stdio MCP client JSON and exit"}});
     parser.addPositionalArgument("file", "Input file (alternative to --apk)", "[file]");
     parser.process(app);
@@ -57,6 +63,9 @@ int runHeadless(int argc, char **argv) {
     settings.simplifyControlFlow = parser.isSet("simplify-control-flow");
     settings.unflatten = parser.isSet("unflatten");
     settings.background = parser.isSet("background");
+    settings.mcpHost = parser.value("http-host").trimmed();
+    if (parser.isSet("http-host") && !parser.isSet("http-port"))
+        return error("--http-host requires --http-port");
     if (parser.isSet("http-port")) {
         auto port = parser.value("http-port").toInt(&valid);
         if (!valid || port < 0 || port > 65535) return error("Invalid HTTP port");
@@ -93,25 +102,22 @@ int runHeadless(int argc, char **argv) {
         fprintf(stderr, "Indexed %lld classes\n", static_cast<long long>(classes.size()));
         if (settings.background) backend.prepareSources();
     });
-    // Reuse the portable synchronous stdio bridge in a child. The parent owns
-    // the event loop/backend; EOF terminates the bridge and this session together.
-    QProcess bridge;
+    // Handle client termination through the event loop so engines are reaped.
+    std::signal(SIGTERM, requestStop);
+    std::signal(SIGINT, requestStop);
+    QTimer termination;
+    QObject::connect(&termination, &QTimer::timeout, &app, [&app] {
+        if (stopRequested) app.quit();
+    });
+    termination.start(50);
     if (settings.mcpTransport == "stdio") {
-        bridge.setInputChannelMode(QProcess::ForwardedInputChannel);
-        bridge.setProcessChannelMode(QProcess::ForwardedChannels);
-        QObject::connect(&bridge, qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
-                         &app, [&app](int code, QProcess::ExitStatus status) {
-                             app.exit(status == QProcess::NormalExit ? code : 1);
-                         });
-        bridge.start(QCoreApplication::applicationFilePath(), {"--mcp", "--socket", server.endpoint()});
-        if (!bridge.waitForStarted(5000)) return error(bridge.errorString());
+        startMcpStdio(server.endpoint());
     } else {
         fprintf(stderr, "MCP URL: %s\n", qPrintable(server.httpUrl()));
     }
     QTimer::singleShot(0, &backend, [&backend, input] { backend.open(input); });
     const int result = app.exec();
-    bridge.kill();
-    if (bridge.state() != QProcess::NotRunning) bridge.waitForFinished(3000);
+    server.stop();
     backend.cancel();
     return result;
 }

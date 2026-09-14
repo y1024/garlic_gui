@@ -71,6 +71,7 @@ void MainWindow::applySettings(const AppSettings &settings, bool preserveAnalysi
         palette.setColor(QPalette::Window, QColor("#17212d"));
         palette.setColor(QPalette::WindowText, QColor("#dce5ee"));
         palette.setColor(QPalette::Base, QColor("#111b26"));
+        palette.setColor(QPalette::AlternateBase, QColor("#1c2937"));
         palette.setColor(QPalette::Text, QColor("#dce5ee"));
         palette.setColor(QPalette::Button, QColor("#243446"));
         palette.setColor(QPalette::ButtonText, QColor("#dce5ee"));

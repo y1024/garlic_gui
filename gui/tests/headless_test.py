@@ -56,6 +56,12 @@ with tempfile.TemporaryFile(mode='w+') as log:
         assert 'class ' in json.dumps(source), source
         settings = tool('get_settings')
         assert settings['deobfuscate'] and settings['unflatten'], settings
+        for _ in range(60):
+            assert tool('get_all_classes')['total'] == classes['total']
+        if os.name == 'posix':
+            processes = subprocess.check_output(['ps', '-axo', 'ppid=,command='], text=True)
+            assert not any(line.split(None, 1)[0] == str(proc.pid) and '--mcp' in line
+                           for line in processes.splitlines() if line.split()), processes
         proc.stdin.close()
         assert proc.wait(timeout=15) == 0
     finally:
@@ -65,3 +71,43 @@ with tempfile.TemporaryFile(mode='w+') as log:
         log.seek(0)
         print(log.read(), file=sys.stderr)
 print('Headless MCP startup, config, source and EOF passed')
+
+# Repeated early EOF must not leave headless sessions behind.
+for _ in range(4):
+    p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, env=env)
+    p.stdin.close()
+    try:
+        assert p.wait(timeout=15) == 0
+    finally:
+        if p.poll() is None:
+            p.kill(); p.wait()
+
+# HTTP defaults to loopback, permits an explicit address, and reaps on SIGTERM.
+for host in (None, '127.0.0.1', '0.0.0.0'):
+    import urllib.request
+    with tempfile.TemporaryFile(mode='w+') as log:
+        command = args + ['--http-port', '0'] + (['--http-host', host] if host else [])
+        p = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=log, env=env)
+        try:
+            deadline = time.monotonic() + 15
+            url = None
+            while not url:
+                log.seek(0)
+                for line in log.read().splitlines():
+                    if line.startswith('MCP URL: '): url = line.removeprefix('MCP URL: ')
+                assert time.monotonic() < deadline
+                time.sleep(.05)
+            assert url.startswith('http://127.0.0.1:')
+            request = urllib.request.Request(url, data=json.dumps(dict(jsonrpc='2.0', id=1, method='initialize')).encode(),
+                                             headers={'Content-Type': 'application/json'})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                assert 'result' in json.load(response)
+            p.terminate()
+            p.wait(timeout=15)
+            if os.name == 'posix': assert p.returncode == 0
+        finally:
+            if p.poll() is None: p.kill(); p.wait()
+assert subprocess.run(args + ['--http-port', '0', '--http-host', 'invalid'], env=env,
+                      capture_output=True, timeout=10).returncode != 0
+print('Repeated calls, EOF, HTTP bind addresses and termination passed')
