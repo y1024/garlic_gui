@@ -195,6 +195,79 @@ static void dex_local_variable_exp(jd_exp *exp, jd_val *val)
     val->stack_var->use_count ++;
 }
 
+static bool dex_ins_has_method_id(jd_dex_ins *ins)
+{
+    return (ins->code >= DEX_INS_INVOKE_VIRTUAL &&
+            ins->code <= DEX_INS_INVOKE_INTERFACE) ||
+           (ins->code >= DEX_INS_INVOKE_VIRTUAL_RANGE &&
+            ins->code <= DEX_INS_INVOKE_INTERFACE_RANGE);
+}
+
+static bool descriptor_is_object_ref(string type)
+{
+    return type != NULL && (type[0] == 'L' || type[0] == '[');
+}
+
+static bool dex_val_is_zero_int(jd_val *val)
+{
+    return val != NULL && val->type == JD_VAR_INT_T &&
+           val->data != NULL && val->data->primitive != NULL &&
+           val->data->primitive->int_val == 0;
+}
+
+static void dex_fill_null_const(jd_exp *exp)
+{
+    jd_exp_const *const_exp = make_obj(jd_exp_const);
+    jd_val *val = stack_make_primitive_val(JD_VAR_NULL_T);
+    val->data->cname = (string)g_str_null;
+    const_exp->val = val;
+    exp->type = JD_EXPRESSION_CONST;
+    exp->data = const_exp;
+}
+
+static void dex_invoke_argument_exp(jd_exp *arg, jd_val *val, string expected)
+{
+    /* Dalvik uses const/4 0 for both int 0 and null. Honour the callee type. */
+    if (descriptor_is_object_ref(expected) &&
+        (val == NULL || dex_val_is_zero_int(val)))
+        dex_fill_null_const(arg);
+    else
+        dex_local_variable_exp(arg, val);
+}
+
+static jd_descriptor *dex_invoke_proto(jd_dex_ins *ins)
+{
+    if (!dex_ins_has_method_id(ins))
+        return NULL;
+    jd_meta_dex *meta = dex_ins_meta(ins);
+    u2 method_index = dex_ins_parameter(ins, 1);
+    if (method_index >= meta->header->method_ids_size)
+        return NULL;
+    dex_method_id *method_id = &meta->method_ids[method_index];
+    if (method_id->proto_idx >= meta->header->proto_ids_size)
+        return NULL;
+    dex_proto_id *proto_id = &meta->proto_ids[method_id->proto_idx];
+    jd_descriptor *desc = make_obj(jd_descriptor);
+    desc->str_return = dex_str_of_type_id(meta, proto_id->return_type_idx);
+    desc->list = linit_string();
+    if (proto_id->parameters_off != 0 && proto_id->type_list != NULL) {
+        for (u4 i = 0; i < proto_id->type_list->size; ++i) {
+            string type = dex_str_of_type_id(meta,
+                                             proto_id->type_list->list[i].type_idx);
+            ladd_string(desc->list, type);
+        }
+    }
+    return desc;
+}
+
+static string dex_invoke_arg_type(jd_descriptor *desc, int proto_index)
+{
+    if (desc == NULL || desc->list == NULL || proto_index < 0 ||
+        proto_index >= (int)desc->list->size)
+        return NULL;
+    return lget_string(desc->list, proto_index);
+}
+
 static void dex_move_expression(jd_exp *exp, jd_dex_ins *ins)
 {
     dex_build_assignment(exp, ins);
@@ -920,6 +993,7 @@ static void dex_invoke_expression(jd_exp *exp, jd_dex_ins *ins)
 
     invoke->class_name = descriptor_to_s(class_name);
     invoke->method_name = name;
+    invoke->descriptor = dex_invoke_proto(ins);
 
     u1 real_param_size = param_size;
     for (int i = 0; i < param_size; ++i) {
@@ -938,14 +1012,19 @@ static void dex_invoke_expression(jd_exp *exp, jd_dex_ins *ins)
     for (int i = 0; i < param_size; ++i) {
         u2 slot = dex_ins_parameter(ins, i + increase);
         jd_val *val = ins->stack_in->local_vars[slot];
+        string expected = dex_ins_is_invoke_static(ins)
+                              ? dex_invoke_arg_type(invoke->descriptor, i)
+                              : (i == 0 ? NULL
+                                        : dex_invoke_arg_type(invoke->descriptor,
+                                                              i - 1));
         if (dex_ins_is_invoke_static(ins)) {
             jd_exp *arg = &invoke->list->args[i];
-            dex_local_variable_exp(arg, val);
+            dex_invoke_argument_exp(arg, val, expected);
         }
         else {
             jd_exp *list_args = invoke->list->args;
             jd_exp *arg = i == 0 ? &list_args[param_size-1] : &list_args[i-1];
-            dex_local_variable_exp(arg, val);
+            dex_invoke_argument_exp(arg, val, expected);
         }
 
         if (stack_val_is_wide(val))
@@ -1024,6 +1103,7 @@ static void dex_invoke_range_expression(jd_exp *exp, jd_dex_ins *ins)
 
     invoke->class_name = descriptor_to_s(class_name);
     invoke->method_name = name;
+    invoke->descriptor = dex_invoke_proto(ins);
 
     u2 start_index = dex_ins_parameter(ins, 2);
     u2 count = start_index + start - 1;
@@ -1046,9 +1126,14 @@ static void dex_invoke_range_expression(jd_exp *exp, jd_dex_ins *ins)
     int increase = 0;
     for (int i = 0; i < param_size; ++i) {
         jd_val *val = ins->stack_in->local_vars[i + start_index + increase];
+        string expected = dex_ins_is_invoke_static_range(ins)
+                              ? dex_invoke_arg_type(invoke->descriptor, i)
+                              : (i == 0 ? NULL
+                                        : dex_invoke_arg_type(invoke->descriptor,
+                                                              i - 1));
         if (dex_ins_is_invoke_static_range(ins)) {
             jd_exp *arg = &invoke->list->args[i];
-            dex_local_variable_exp(arg, val);
+            dex_invoke_argument_exp(arg, val, expected);
         }
         else {
             jd_exp *arg;
@@ -1060,7 +1145,7 @@ static void dex_invoke_range_expression(jd_exp *exp, jd_dex_ins *ins)
             else {
                 arg = &list_args[i-1];
             }
-            dex_local_variable_exp(arg, val);
+            dex_invoke_argument_exp(arg, val, expected);
         }
 
         if (stack_val_is_wide(val)) {

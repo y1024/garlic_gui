@@ -24,6 +24,7 @@ class SearchDialog : public QDialog {
 
   private:
     void navigate();
+    void updateResultColumns();
     MainWindow *window_;
     QBoxLayout *filters_ = nullptr;
     QLineEdit *query_, *package_;

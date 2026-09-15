@@ -76,6 +76,25 @@ class WindowTest : public QObject {
             }
         }
     }
+    void searchResultsHorizontalScroll() {
+        MainWindow window;
+        SearchDialog dialog(&window);
+        auto table = dialog.findChild<QTableView *>("searchResults");
+        QVERIFY(table);
+        QCOMPARE(table->horizontalScrollBarPolicy(), Qt::ScrollBarAlwaysOn);
+        QCOMPARE(table->horizontalScrollMode(), QAbstractItemView::ScrollPerPixel);
+        QCOMPARE(table->textElideMode(), Qt::ElideNone);
+        QVERIFY(table->horizontalHeader()->sectionResizeMode(0) != QHeaderView::Stretch);
+        QVERIFY(table->horizontalHeader()->sectionResizeMode(1) != QHeaderView::Stretch);
+        dialog.resize(480, 360);
+        dialog.show();
+        QCoreApplication::processEvents();
+        QVERIFY(table->horizontalScrollBar()->isVisible());
+        table->setColumnWidth(0, 2400);
+        QVERIFY(table->horizontalScrollBar()->maximum() > 0);
+        table->horizontalScrollBar()->setValue(table->horizontalScrollBar()->maximum());
+        QVERIFY(table->horizontalScrollBar()->value() > 0);
+    }
     void searchHistoryLimit() {
         MainWindow window;
         SearchDialog dialog(&window);

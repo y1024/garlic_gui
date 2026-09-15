@@ -417,6 +417,24 @@ public class Check {
          str(wide_output / 'demo/WideConstants.java'), str(runner)],
         check=True, capture_output=True, timeout=30)
     run(['java', '-cp', str(wide_output), 'Check'], check=True, capture_output=True, timeout=20)
+    # DEX const/4 0 for a reference parameter must print as null, not int 0.
+    maps_out = root / 'null-maps'
+    run([str(engine), str(fixtures / 'demo.jar'), '-o', str(maps_out), '-c', 'demo/Maps', '-t', '1'],
+        check=True, capture_output=True, timeout=20)
+    maps = (maps_out / 'demo/Maps.java').read_text(encoding='utf-8')
+    compact = maps.replace(' ', '').replace('\n', '')
+    assert 'apis/users/auth/oauth/v2/a' in maps, maps
+    assert 'take(0,' not in compact, maps
+    assert compact.count('null') >= 5, maps
+    if (fixtures / 'classes.dex').exists():
+        dex_maps = root / 'null-maps-dex'
+        run([str(engine), str(fixtures / 'classes.dex'), '-o', str(dex_maps), '-c', 'demo/Maps', '-t', '1'],
+            check=True, capture_output=True, timeout=20)
+        dex_code = (dex_maps / 'demo/Maps.java').read_text(encoding='utf-8')
+        dex_compact = dex_code.replace(' ', '').replace('\n', '')
+        assert 'apis/users/auth/oauth/v2/a' in dex_code, dex_code
+        assert 'take(0,' not in dex_compact, dex_code
+        assert dex_compact.count('null') >= 5, dex_code
     for number_format in ['auto', 'decimal', 'hex']:
         run([str(engine), str(wide_archive), '-o', str(wide_output), '-t', '1'], check=True,
             capture_output=True, timeout=20, env=dict(os.environ, GARLIC_NUMBER_FORMAT=number_format))

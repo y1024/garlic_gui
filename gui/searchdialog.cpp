@@ -78,7 +78,8 @@ class MatchDelegate : public QStyledItemDelegate {
         layout.beginLayout();
         auto line = layout.createLine();
         if (line.isValid())
-            line.setLineWidth(100000);
+            line.setLineWidth(qMax(textRect.width(),
+                                   option.fontMetrics.horizontalAdvance(text) + 8));
         layout.endLayout();
         p->save();
         p->setClipRect(textRect);
@@ -88,6 +89,14 @@ class MatchDelegate : public QStyledItemDelegate {
                                option.rect.top() +
                                    (option.rect.height() - option.fontMetrics.height()) / 2));
         p->restore();
+    }
+    QSize sizeHint(const QStyleOptionViewItem &option,
+                   const QModelIndex &index) const override {
+        QStyleOptionViewItem opt(option);
+        initStyleOption(&opt, index);
+        const int textWidth = opt.fontMetrics.horizontalAdvance(opt.text) + 16;
+        const int iconWidth = opt.icon.isNull() ? 0 : opt.decorationSize.width() + 8;
+        return {textWidth + iconWidth, qMax(28, opt.fontMetrics.height() + 10)};
     }
 };
 } // namespace
@@ -161,10 +170,14 @@ SearchDialog::SearchDialog(MainWindow *window) : QDialog(window), window_(window
     table_->setShowGrid(false);
     table_->setAlternatingRowColors(true);
     table_->setWordWrap(false);
+    table_->setTextElideMode(Qt::ElideNone);
+    table_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    table_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     table_->verticalHeader()->hide();
     table_->verticalHeader()->setDefaultSectionSize(28);
     table_->horizontalHeader()->setStretchLastSection(false);
-    table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    table_->horizontalHeader()->setMinimumSectionSize(80);
     table_->setItemDelegate(new MatchDelegate(table_));
     root->addWidget(table_, 1);
     auto progress = new QHBoxLayout;
@@ -246,6 +259,7 @@ SearchDialog::SearchDialog(MainWindow *window) : QDialog(window), window_(window
                 if (id != request_)
                     return;
                 static_cast<ResultsModel *>(model_)->append(hits);
+                updateResultColumns();
                 status_->setText(tr("已找到 %1 条，正在搜索…").arg(model_->rowCount()));
             });
     connect(window_->backend(), &Backend::searchProgress, this,
@@ -300,6 +314,7 @@ void SearchDialog::startSearch(int limit) {
     o.caseSensitive = sensitive_->isChecked();
     o.limit = limit;
     static_cast<ResultsModel *>(model_)->clear();
+    updateResultColumns();
     static_cast<MatchDelegate *>(table_->itemDelegate())->expression = searchExpression(o);
     request_ = window_->backend()->search(o);
     setWindowTitle(tr("项目搜索：%1").arg(o.query));
@@ -329,6 +344,22 @@ void SearchDialog::resizeEvent(QResizeEvent *event) {
     QDialog::resizeEvent(event);
     if (filters_)
         filters_->setDirection(width() < 900 ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
+    updateResultColumns();
+}
+
+void SearchDialog::updateResultColumns() {
+    if (!table_ || !model_)
+        return;
+    table_->resizeColumnsToContents();
+    const int columns = model_->columnCount();
+    if (columns <= 0)
+        return;
+    const int available = table_->viewport()->width();
+    int used = 0;
+    for (int i = 0; i < columns; ++i)
+        used += table_->columnWidth(i);
+    if (used < available)
+        table_->setColumnWidth(columns - 1, table_->columnWidth(columns - 1) + (available - used));
 }
 
 void SearchDialog::setPackage(const QString &name) {

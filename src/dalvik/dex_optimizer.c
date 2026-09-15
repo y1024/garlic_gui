@@ -21,6 +21,7 @@
 #include "decompiler/expression_goto.h"
 #include "decompiler/expression_synchronized.h"
 #include "decompiler/expression_copy_propgation.h"
+#include "decompiler/expression_analyse.h"
 #include "decompiler/expression_node_param.h"
 #include "decompiler/expression_return.h"
 #include "decompiler/expression_exception.h"
@@ -59,6 +60,8 @@ void optimize_dex_method(jd_method *m)
         changed |= copy_propagation_of_expression(m);
 
     } while (changed);
+
+    method_type_analyse(m);
 
     identify_assignment(m);
     fold_method_constants(m);
