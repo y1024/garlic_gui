@@ -152,6 +152,15 @@ static void jar_entry_source_file(jclass_file *jc, string dir, string name)
     jcp_info *info = pool_item(jc, jc->this_class);
     string full = get_class_name(jc, info);
     string class_name = class_simple_name(full);
+    char *mapped = source_layout_mapped_path(dir, full, ".java");
+    if (mapped) {
+        FILE *stream = fopen(mapped, "w");
+        if (stream == NULL)
+            printf("[error]: path: %s, error: %s\n", mapped, strerror(errno));
+        free(mapped);
+        jc->jfile->source = stream;
+        return;
+    }
     string path;
     if (source_safe_paths_enabled()) {
         char *stem = source_storage_name(full);

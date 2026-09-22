@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
+#include "source_layout.h"
 
 /* GUI cache paths are UTF-8 hex, split into bounded components. This is
  * reversible and injective even on case-insensitive / Unicode-normalizing volumes. */
@@ -37,6 +38,8 @@ static inline bool source_safe_paths_enabled(void)
 }
 static inline char *source_storage_name(const char *name)
 {
+    char *override_stem = source_layout_override(name);
+    if (override_stem) return override_stem;
     if (!source_safe_paths_enabled()) return strdup(name);
     size_t len = strlen(name);
     if (len > 2 && name[0] == 'L' && name[len - 1] == ';') {

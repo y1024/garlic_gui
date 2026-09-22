@@ -6,6 +6,8 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QMap>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
@@ -45,9 +47,86 @@ QString Project::sourceStem(const QString &name) {
     for (int i = 0; i < hex.size(); i += 64) parts.append(QString::fromLatin1(hex.mid(i, 64)));
     return "_classes/" + parts.join('/');
 }
+static quint32 exportPathHash(const QByteArray &bytes) {
+    quint32 hash = 2166136261u;
+    for (char byte : bytes)
+        hash = (hash ^ static_cast<unsigned char>(byte)) * 16777619u;
+    return hash;
+}
+static QString caseKey(const QString &stem) {
+    return stem.normalized(QString::NormalizationForm_C).toCaseFolded();
+}
+QHash<QString, QString> Project::exportPathOverrides(bool smali) const {
+    QSet<QString> stems;
+    for (const auto &name : classes()) {
+        const auto stem = smali ? normalize(name) : owner(name);
+        stems.insert(stem);
+        const auto renamed = renamedClass(stem);
+        if (renamed != stem)
+            stems.insert(renamed);
+    }
+    QHash<QString, QStringList> groups;
+    for (const auto &stem : stems)
+        groups[caseKey(stem)].append(stem);
+    QHash<QString, QString> overrides;
+    for (auto it = groups.cbegin(); it != groups.cend(); ++it) {
+        auto group = it.value();
+        if (group.size() < 2)
+            continue;
+        std::sort(group.begin(), group.end());
+        QSet<QString> used{caseKey(group.first())};
+        for (int i = 1; i < group.size(); ++i) {
+            const auto &stem = group.at(i);
+            const auto hash = QString::number(exportPathHash(stem.toUtf8()), 16).rightJustified(8, '0');
+            auto candidate = stem + "~" + hash;
+            for (int n = 2; used.contains(caseKey(candidate)); ++n)
+                candidate = stem + "~" + hash + "-" + QString::number(n);
+            used.insert(caseKey(candidate));
+            overrides.insert(stem, candidate);
+        }
+    }
+    return overrides;
+}
+static QString mappedExportStem(const QString &directory, const QString &name, bool *haveMap) {
+    static QMutex mutex;
+    static QHash<QString, QHash<QString, QString>> maps;
+    static QSet<QString> missing;
+    QMutexLocker locker(&mutex);
+    if (missing.contains(directory)) {
+        *haveMap = false;
+        return {};
+    }
+    if (!maps.contains(directory)) {
+        QFile file(QDir(directory).filePath(".garlic-path-map"));
+        if (!file.exists() || !file.open(QIODevice::ReadOnly)) {
+            missing.insert(directory);
+            *haveMap = false;
+            return {};
+        }
+        QHash<QString, QString> map;
+        while (!file.atEnd()) {
+            const auto line = file.readLine();
+            const int tab = line.indexOf('\t');
+            if (tab <= 0)
+                continue;
+            const auto key = QString::fromUtf8(line.left(tab));
+            const auto value = QString::fromUtf8(line.mid(tab + 1)).trimmed();
+            if (!key.isEmpty() && !value.isEmpty())
+                map.insert(key, value);
+        }
+        maps.insert(directory, map);
+    }
+    *haveMap = true;
+    return maps.constFind(directory)->value(name);
+}
 QString Project::sourcePath(const QString &directory, const QString &name, const QString &suffix) {
-    return QDir(directory).filePath((QFileInfo::exists(QDir(directory).filePath(".garlic-safe-paths"))
-        ? sourceStem(name) : normalize(name)) + suffix);
+    bool haveMap = false;
+    const auto normalized = normalize(name);
+    const auto mapped = mappedExportStem(directory, normalized, &haveMap);
+    if (!mapped.isEmpty())
+        return QDir(directory).filePath(mapped + suffix);
+    const bool hex = !haveMap && QFileInfo::exists(QDir(directory).filePath(".garlic-safe-paths"));
+    return QDir(directory).filePath((hex ? sourceStem(name) : normalized) + suffix);
 }
 QString Project::classOf(const QString &id) {
     const int end = id.indexOf(';');

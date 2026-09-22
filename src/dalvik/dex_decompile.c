@@ -138,6 +138,14 @@ static void dex_class_source_save_dir(jd_dex *dex, jsource_file *jf)
     if (meta->source_dir == NULL || ((jf->is_anonymous || jf->is_inner) &&
         (!class_selection_explicit() || jf->parent != NULL)))
         return;
+    char *mapped = source_layout_mapped_path(meta->source_dir, jf->fname, ".java");
+    if (mapped) {
+        jf->source = fopen(mapped, "wb");
+        if (jf->source == NULL)
+            fprintf(stdout, "[error]: open file %s failed: %d\n", mapped, errno);
+        free(mapped);
+        return;
+    }
     string path;
     if (source_safe_paths_enabled()) {
         char *stem = source_storage_name(jf->fname);
@@ -165,6 +173,15 @@ FILE* dex_class_smali_save_dir(jd_dex *dex, dex_class_def *cf)
     string fname = class_full_name(desc);
     string sname = class_simple_name_without_primitive(fname);
     string pname = class_package_name_of(fname);
+
+    char *mapped = source_layout_mapped_path(meta->source_dir, desc, ".smali");
+    if (mapped) {
+        FILE *stream = fopen(mapped, "wb");
+        if (stream == NULL)
+            fprintf(stdout, "[error]: open file %s failed: %d\n", mapped, errno);
+        free(mapped);
+        return stream;
+    }
 
     string full_dir = str_create("%s/%s", meta->source_dir, pname ? pname : "");
     mkdir_p(full_dir);

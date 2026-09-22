@@ -473,9 +473,14 @@ class WindowTest : public QObject {
         QSignalSpy finished(&backend, &Backend::exported);
         backend.exportSources(output, false);
         QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 15000);
-        QVERIFY(QFileInfo::exists(output + "/.garlic-safe-paths"));
+        QVERIFY(!QFileInfo::exists(output + "/.garlic-safe-paths"));
+        QVERIFY(!QDir(output + "/_classes").exists());
         const auto upper = Project::sourcePath(output, "demo/cases/Foo", ".java");
         const auto lower = Project::sourcePath(output, "demo/cases/foo", ".java");
+        QVERIFY(QFileInfo(upper).absolutePath().endsWith("demo/cases"));
+        QVERIFY(QFileInfo(lower).absolutePath().endsWith("demo/cases"));
+        QCOMPARE(QFileInfo(upper).fileName(), QString("Foo.java"));
+        QVERIFY(QFileInfo(lower).fileName().startsWith("foo~"));
         QVERIFY(upper.toCaseFolded() != lower.toCaseFolded());
         QFile first(upper), second(lower);
         QVERIFY(first.open(QIODevice::ReadOnly)); QVERIFY(second.open(QIODevice::ReadOnly));

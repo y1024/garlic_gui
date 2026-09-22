@@ -440,20 +440,19 @@ void Backend::exportSources(const QString &directory, bool smali) {
         emit failed(tr("导出目标必须是可创建的新目录：%1").arg(directory));
         return;
     }
-    QSet<QString> originalPaths, renamedPaths;
-    bool safePaths = false;
-    for (const auto &name : project_.classes()) {
-        const auto renamed = project_.renamedClass(name);
-        const auto originalKey = name.normalized(QString::NormalizationForm_C).toCaseFolded();
-        const auto renamedKey = renamed.normalized(QString::NormalizationForm_C).toCaseFolded();
-        if (originalPaths.contains(originalKey) || renamedPaths.contains(renamedKey) ||
-            (renamed != name && originalKey == renamedKey)) safePaths = true;
-        originalPaths.insert(originalKey); renamedPaths.insert(renamedKey);
-    }
-    if (safePaths) {
-        QFile marker(directory + "/.garlic-safe-paths");
-        if (!marker.open(QIODevice::WriteOnly)) { emit failed(marker.errorString()); return; }
-        marker.write("1\n");
+    // Java files follow the outer class. A case-only difference on an inner
+    // class must not encode the whole tree. Real output collisions keep the
+    // package directory; only the extra names get a ~ suffix.
+    const auto overrides = project_.exportPathOverrides(smali);
+    if (!overrides.isEmpty()) {
+        QFile map(QDir(directory).filePath(".garlic-path-map"));
+        if (!map.open(QIODevice::WriteOnly)) { emit failed(map.errorString()); return; }
+        for (auto it = overrides.cbegin(); it != overrides.cend(); ++it) {
+            map.write(it.key().toUtf8());
+            map.write("\t");
+            map.write(it.value().toUtf8());
+            map.write("\n");
+        }
     }
     exportDir_ = directory;
     jobDir_ = directory;
@@ -726,6 +725,10 @@ void Backend::applyEnvironment(QProcess &process, const QString &directory) {
     if (workspace_)
         env.insert("GARLIC_APK_CACHE_DIR", workspace_->path() + "/apk-cache");
     env.insert("GARLIC_SAFE_SOURCE_PATHS", QFileInfo::exists(directory + "/.garlic-safe-paths") ? "1" : "0");
+    env.remove("GARLIC_PATH_MAP");
+    const auto pathMap = QDir(directory).filePath(".garlic-path-map");
+    if (QFileInfo::exists(pathMap))
+        env.insert("GARLIC_PATH_MAP", pathMap);
     env.insert("GARLIC_ESCAPE_UNICODE", settings_.escapeUnicode ? "1" : "0");
     env.insert("GARLIC_SIMPLIFY_CONTROL_FLOW", settings_.simplifyControlFlow ? "1" : "0");
     env.insert("GARLIC_UNFLATTEN", settings_.unflatten ? "1" : "0");

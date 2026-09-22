@@ -88,6 +88,9 @@ class Project : public QObject {
     static QString normalize(QString name);
     static QString sourceStem(const QString &name);
     static QString sourcePath(const QString &directory, const QString &name, const QString &suffix);
+    // Class paths whose literal export file would collide on a case-insensitive
+    // volume. The value is the relative path without an extension.
+    QHash<QString, QString> exportPathOverrides(bool smali) const;
     static QString classId(const QString &name) { return "L" + normalize(name) + ";"; }
     static QString classOf(const QString &id);
     void cacheDocument(const QString &key, const SourceDocument &doc) { documents_[key] = doc; }
